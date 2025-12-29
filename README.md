@@ -47,12 +47,41 @@ python scripts/add-alert.py alerts/*.json
 python scripts/add-alert.py --dry-run alerts/*.json
 ```
 
-### Options
+#### Add Options
 
 | Flag | Description |
 |------|-------------|
 | `--dry-run` | Validate JSON files without importing |
 | `--folder` | Override folder UID for all alerts |
+
+### Remove Alert Rules
+
+```bash
+# By name
+python scripts/remove-alert.py "High CPU Usage"
+
+# By UID
+python scripts/remove-alert.py --uid ef8iwvb3m0feoc
+
+# List all alerts
+python scripts/remove-alert.py --list
+
+# Dry run (show what would be deleted)
+python scripts/remove-alert.py --dry-run "High CPU Usage"
+
+# Skip confirmation prompt
+python scripts/remove-alert.py -f "High CPU Usage"
+```
+
+#### Remove Options
+
+| Flag | Description |
+|------|-------------|
+| `--uid` | Remove alert by UID |
+| `--name` | Remove alert by name/title |
+| `--list` | List all alert rules |
+| `--dry-run` | Show what would be deleted without deleting |
+| `-f, --force` | Skip confirmation prompt |
 
 ## Alert JSON Format
 
