@@ -2,9 +2,14 @@
 """
 add-alert.py - Import Grafana alert rules from JSON file
 
+Supports two formats:
+  1. Individual alert rules (simple format)
+  2. Grafana export format (with apiVersion, groups, and nested rules)
+
 Usage:
     python add-alert.py <alert-definition.json>
     python add-alert.py alerts/*.json
+    python add-alert.py exported-alerts.json  # Grafana export format
 
 Environment Variables:
     GRAFANA_URL      - Grafana server URL (e.g., https://grafana.example.com)
@@ -74,6 +79,59 @@ def get_auth(config: dict) -> Optional[tuple]:
     return None
 
 
+def get_folders(config: dict) -> dict:
+    """Get all folders and return a name->uid mapping."""
+    url = f"{config['url']}/api/folders"
+
+    try:
+        response = requests.get(
+            url,
+            headers=get_headers(config),
+            auth=get_auth(config),
+            timeout=30,
+        )
+        response.raise_for_status()
+        folders = response.json()
+        return {f["title"]: f["uid"] for f in folders}
+    except requests.RequestException:
+        return {}
+
+
+def is_export_format(data: dict) -> bool:
+    """Check if JSON is in Grafana export format (has apiVersion and groups)."""
+    return "apiVersion" in data and "groups" in data
+
+
+def extract_rules_from_export(config: dict, data: dict, folder_override: Optional[str] = None) -> list:
+    """Extract individual alert rules from Grafana export format."""
+    rules = []
+    folders = None  # Lazy load
+
+    for group in data.get("groups", []):
+        group_name = group.get("name", "default")
+        folder_name = group.get("folder", "")
+
+        # Determine folder UID
+        folder_uid = folder_override
+        if not folder_uid and folder_name:
+            # Look up folder UID by name
+            if folders is None:
+                folders = get_folders(config)
+            folder_uid = folders.get(folder_name)
+            if not folder_uid:
+                print(f"  Warning: Folder '{folder_name}' not found, skipping group '{group_name}'", file=sys.stderr)
+                continue
+
+        for rule in group.get("rules", []):
+            # Add required fields for API
+            rule["ruleGroup"] = group_name
+            if folder_uid:
+                rule["folderUID"] = folder_uid
+            rules.append(rule)
+
+    return rules
+
+
 def validate_alert_json(data: dict) -> bool:
     """Validate alert rule JSON structure."""
     required_fields = ["title", "condition", "data"]
@@ -137,8 +195,8 @@ def update_alert(config: dict, uid: str, alert_data: dict) -> dict:
     return response.json()
 
 
-def import_alert(config: dict, file_path: Path) -> bool:
-    """Import a single alert from JSON file."""
+def import_alert(config: dict, file_path: Path, folder_override: Optional[str] = None) -> tuple:
+    """Import alerts from JSON file. Returns (success_count, total_count)."""
     print(f"Processing: {file_path}")
 
     try:
@@ -146,13 +204,27 @@ def import_alert(config: dict, file_path: Path) -> bool:
             alert_data = json.load(f)
     except json.JSONDecodeError as e:
         print(f"  Error: Invalid JSON - {e}", file=sys.stderr)
-        return False
+        return (0, 1)
     except FileNotFoundError:
         print(f"  Error: File not found", file=sys.stderr)
-        return False
+        return (0, 1)
 
-    # Handle array of alerts or single alert
-    alerts = alert_data if isinstance(alert_data, list) else [alert_data]
+    # Detect format and extract alerts
+    if isinstance(alert_data, dict) and is_export_format(alert_data):
+        print(f"  Detected Grafana export format")
+        alerts = extract_rules_from_export(config, alert_data, folder_override)
+        if not alerts:
+            print(f"  Error: No valid rules found in export", file=sys.stderr)
+            return (0, 1)
+    elif isinstance(alert_data, list):
+        alerts = alert_data
+    else:
+        alerts = [alert_data]
+
+    # Apply folder override if specified
+    if folder_override:
+        for alert in alerts:
+            alert["folderUID"] = folder_override
 
     success_count = 0
     for alert in alerts:
@@ -179,7 +251,7 @@ def import_alert(config: dict, file_path: Path) -> bool:
         except requests.RequestException as e:
             print(f"  Error importing '{title}': {e}", file=sys.stderr)
 
-    return success_count == len(alerts)
+    return (success_count, len(alerts))
 
 
 def main():
@@ -216,39 +288,46 @@ def main():
     if args.dry_run:
         print("DRY RUN - Validating files only\n")
 
-    success = 0
-    failed = 0
+    total_success = 0
+    total_failed = 0
 
     for file_path in args.files:
         if not file_path.exists():
             print(f"Error: File not found: {file_path}", file=sys.stderr)
-            failed += 1
+            total_failed += 1
             continue
 
         if args.dry_run:
             try:
                 with open(file_path, "r") as f:
                     data = json.load(f)
-                alerts = data if isinstance(data, list) else [data]
-                valid = all(validate_alert_json(a) for a in alerts)
-                print(f"{'✓' if valid else '✗'} {file_path}")
-                if valid:
-                    success += 1
+
+                # Handle export format in dry-run
+                if isinstance(data, dict) and is_export_format(data):
+                    print(f"✓ {file_path} (Grafana export format)")
+                    rule_count = sum(len(g.get("rules", [])) for g in data.get("groups", []))
+                    print(f"  Contains {len(data.get('groups', []))} group(s), {rule_count} rule(s)")
+                    total_success += 1
                 else:
-                    failed += 1
+                    alerts = data if isinstance(data, list) else [data]
+                    valid = all(validate_alert_json(a) for a in alerts)
+                    print(f"{'✓' if valid else '✗'} {file_path}")
+                    if valid:
+                        total_success += 1
+                    else:
+                        total_failed += 1
             except json.JSONDecodeError as e:
                 print(f"✗ {file_path} - Invalid JSON: {e}")
-                failed += 1
+                total_failed += 1
         else:
-            if import_alert(config, file_path):
-                success += 1
-            else:
-                failed += 1
+            success, total = import_alert(config, file_path, args.folder)
+            total_success += success
+            total_failed += (total - success)
 
     print()
-    print(f"Summary: {success} succeeded, {failed} failed")
+    print(f"Summary: {total_success} succeeded, {total_failed} failed")
 
-    sys.exit(0 if failed == 0 else 1)
+    sys.exit(0 if total_failed == 0 else 1)
 
 
 if __name__ == "__main__":

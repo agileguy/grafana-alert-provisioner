@@ -36,15 +36,25 @@ GRAFANA_PASSWORD=secret
 
 ### Import Alert Rules
 
+Supports two JSON formats:
+1. **Simple format** - Individual alert rules
+2. **Export format** - Grafana export with `apiVersion`, `groups`, and nested `rules`
+
 ```bash
-# Single file
+# Single file (simple format)
 python scripts/add-alert.py alerts/cpu-alert.json
+
+# Grafana export format (auto-detected)
+python scripts/add-alert.py exported-alerts.json
 
 # Multiple files
 python scripts/add-alert.py alerts/*.json
 
 # Dry run (validate only)
 python scripts/add-alert.py --dry-run alerts/*.json
+
+# Override folder for all alerts
+python scripts/add-alert.py --folder my-folder-uid alerts/*.json
 ```
 
 #### Add Options
@@ -53,6 +63,34 @@ python scripts/add-alert.py --dry-run alerts/*.json
 |------|-------------|
 | `--dry-run` | Validate JSON files without importing |
 | `--folder` | Override folder UID for all alerts |
+
+#### Supported Formats
+
+**Simple format** (single alert):
+```json
+{
+  "title": "My Alert",
+  "folderUID": "alerts",
+  "condition": "C",
+  "data": [...]
+}
+```
+
+**Export format** (from Grafana UI export):
+```json
+{
+  "apiVersion": 1,
+  "groups": [
+    {
+      "name": "my-group",
+      "folder": "MyFolder",
+      "rules": [...]
+    }
+  ]
+}
+```
+
+The export format automatically maps folder names to UIDs.
 
 ### Remove Alert Rules
 
